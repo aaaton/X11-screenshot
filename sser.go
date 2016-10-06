@@ -1,7 +1,3 @@
-// Example simple-mousebinding shows how to grab buttons on the root window and
-// respond to them via callback functions. It also shows how to remove such
-// callbacks so that they no longer respond to the button events.
-// Note that more documentation can be found in the mousebind package.
 package main
 
 import (
@@ -22,121 +18,116 @@ import (
 	"github.com/kbinani/screenshot"
 )
 
-var normal, crosshair xproto.Cursor
-var isActive bool
-
 func main() {
 	// Connect to the X server using the DISPLAY environment variable.
 	X, err := xgbutil.NewConn()
-	if err != nil {
-		log.Fatal(err)
-	}
+	check(err)
 	mousebind.Initialize(X)
 	keybind.Initialize(X)
 
-	normal, err = xcursor.CreateCursor(X, xcursor.XCursor)
-	if err != nil {
-		log.Println(err)
-	}
-	crosshair, err = xcursor.CreateCursor(X, xcursor.Crosshair)
-	if err != nil {
-		log.Println(err)
-	}
+	initOverlay(X)
 
 	//Setup the hotkey
 	err = keybind.KeyPressFun(
 		func(X *xgbutil.XUtil, ev xevent.KeyPressEvent) {
-			log.Println("Ready")
 			changeCursor(X)
-			err = mousebind.ButtonPressFun(startSS).Connect(X, X.RootWin(), "1", false, true)
-			if err != nil {
-				log.Fatal(err)
-			}
-			err = mousebind.ButtonReleaseFun(endSS).Connect(X, X.RootWin(), "1", false, true)
-			if err != nil {
-				log.Fatal(err)
-			}
+			log.Println("Ready")
 		}).Connect(X, X.RootWin(), "Control-Shift-F4", true)
-	if err != nil {
-		log.Fatal(err)
-	}
+	check(err)
 
-	// Finally, start the main event loop. This will route any appropriate
-	// ButtonPressEvents to your callback function.
 	log.Println("Press ctrl+shift+F4 to take screenshot")
 	xevent.Main(X)
 }
 
-var x0, x1, y0, y1 int
+var x0, y0 int
 
-func startSS(X *xgbutil.XUtil, e xevent.ButtonPressEvent) {
-	x0 = int(e.EventX)
-	y0 = int(e.EventY)
+func begin(X *xgbutil.XUtil, rootX, rootY, eventX, eventY int) (bool, xproto.Cursor) {
+	x0 = eventX
+	y0 = eventY
 	log.Println("Starting screenshot")
+	return true, crosshair
 }
 
-func endSS(X *xgbutil.XUtil, e xevent.ButtonReleaseEvent) {
-	x1 = int(e.EventX)
-	y1 = int(e.EventY)
-	width := x1 - x0
-	height := y1 - y0
+func step(X *xgbutil.XUtil, rootX, rootY, eventX, eventY int) {
+	//TODO: This is not working :/ Wanted to make a square where the mouse is marking
+	// startX := x0
+	// width := eventX - startX
+	// if eventX < x0 {
+	// 	width = x0 - eventX
+	// 	startX = eventX
+	// }
+	// startY := y0
+	// height := eventY - startY
+	// if eventY < y0 {
+	// 	height = y0 - eventY
+	// 	startY = eventY
+	// }
+	// region := ewmh.WmOpaqueRegion{X: startX, Y: startY, Width: uint(width), Height: uint(height)}
+	// err := ewmh.WmOpaqueRegionSet(X, ov.Id, []ewmh.WmOpaqueRegion{region})
+	// check(err)
+}
+
+func end(X *xgbutil.XUtil, rootX, rootY, eventX, eventY int) {
+	width := eventX - x0
+	height := eventY - y0
 	closeCursor()
 	if width < 10 || height < 10 {
 		log.Println("Too small...")
 	} else {
 		img, err := screenshot.Capture(x0, y0, width, height)
-		if err != nil {
-			log.Println(err)
-		}
+		check(err)
+
 		t := time.Now()
 		filename := desktop() + "Screenshot " + t.Format("2006-01-02 15:04:05") + ".png"
 		file, err := os.Create(filename)
-		if err != nil {
-			log.Println(err)
-		}
+		check(err)
 		defer file.Close()
+
 		png.Encode(file, img)
 		log.Println("Saved as ", filename)
-
 	}
-	mousebind.Detach(X, X.RootWin())
-	mousebind.Detach(X, X.RootWin())
+
 }
 
-var savedWin *xwindow.Window
-var ovWidth, ovHeight int
+var ov *xwindow.Window
+var crosshair xproto.Cursor
+var isActive bool
+
+func initOverlay(X *xgbutil.XUtil) {
+	var err error
+	ov, err = xwindow.Generate(X)
+	check(err)
+	crosshair, err = xcursor.CreateCursor(X, xcursor.Crosshair)
+	check(err)
+
+	err = ov.CreateChecked(X.RootWin(), 0, 0, 100, 100,
+		xproto.CwBackPixel|xproto.CwCursor,
+		0xffffffff, uint32(crosshair))
+	check(err)
+	ewmh.WmNameSet(X, ov.Id, "Screenshot")
+	ewmh.WmWindowOpacitySet(X, ov.Id, 0)
+	//Drag mouse
+	mousebind.Drag(X, ov.Id, ov.Id, "1", true, begin, step, end)
+
+	//Abort
+	err = keybind.KeyPressFun(func(X *xgbutil.XUtil, ev xevent.KeyPressEvent) {
+		closeCursor()
+	}).Connect(X, ov.Id, "Escape", true)
+	check(err)
+}
 
 func changeCursor(X *xgbutil.XUtil) {
 	if !isActive {
-		win, err := xwindow.Generate(X)
-		if err != nil {
-			log.Println(err)
-		}
-
-		win.Create(X.RootWin(), 0, 0, 100, 100,
-			xproto.CwBackPixel|xproto.CwCursor,
-			0xffffffff, uint32(crosshair))
-		win.Map()
-
-		ewmh.WmStateReq(X, win.Id, ewmh.StateToggle,
-			"_NET_WM_STATE_FULLSCREEN")
-		ewmh.WmWindowOpacitySet(X, win.Id, 0.0)
-		savedWin = win
-	} else {
-		if savedWin != nil {
-			savedWin.Destroy()
-		}
+		ov.Map()
+		ewmh.WmStateReq(X, ov.Id, ewmh.StateToggle, "_NET_WM_STATE_FULLSCREEN")
 	}
-
 	isActive = !isActive
-
 }
 
 func closeCursor() {
-	if savedWin != nil {
-		savedWin.Destroy()
+	if ov != nil {
+		ov.Unmap()
 	}
-
 	isActive = !isActive
 }
 
@@ -146,4 +137,11 @@ func desktop() string {
 		log.Println(err)
 	}
 	return usr.HomeDir + "/Desktop/"
+}
+
+func check(err error) {
+	if err != nil {
+		log.Println(err)
+		closeCursor()
+	}
 }
