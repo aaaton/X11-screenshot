@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/user"
 	"time"
+	"xgbutil/ewmh"
 	"xgbutil/keybind"
 	"xgbutil/xcursor"
 	"xgbutil/xwindow"
@@ -79,6 +80,7 @@ func endSS(X *xgbutil.XUtil, e xevent.ButtonReleaseEvent) {
 	y1 = int(e.EventY)
 	width := x1 - x0
 	height := y1 - y0
+	closeCursor()
 	if width < 10 || height < 10 {
 		log.Println("Too small...")
 	} else {
@@ -87,7 +89,7 @@ func endSS(X *xgbutil.XUtil, e xevent.ButtonReleaseEvent) {
 			log.Println(err)
 		}
 		t := time.Now()
-		filename := desktop() + "screenshot-" + t.Format("2006-01-02 15:04:05") + ".png"
+		filename := desktop() + "Screenshot " + t.Format("2006-01-02 15:04:05") + ".png"
 		file, err := os.Create(filename)
 		if err != nil {
 			log.Println(err)
@@ -95,29 +97,46 @@ func endSS(X *xgbutil.XUtil, e xevent.ButtonReleaseEvent) {
 		defer file.Close()
 		png.Encode(file, img)
 		log.Println("Saved as ", filename)
+
 	}
-	changeCursor(X)
 	mousebind.Detach(X, X.RootWin())
 	mousebind.Detach(X, X.RootWin())
 }
 
+var savedWin *xwindow.Window
+var ovWidth, ovHeight int
+
 func changeCursor(X *xgbutil.XUtil) {
-	win, err := xwindow.Create(X, X.RootWin())
-	if err != nil {
-		log.Println(err)
-	}
-	win, err = win.Parent()
-	if err != nil {
-		log.Println(err)
-	}
-	var c xproto.Cursor
-	if isActive {
-		c = normal
+	if !isActive {
+		win, err := xwindow.Generate(X)
+		if err != nil {
+			log.Println(err)
+		}
+
+		win.Create(X.RootWin(), 0, 0, 100, 100,
+			xproto.CwBackPixel|xproto.CwCursor,
+			0xffffffff, uint32(crosshair))
+		win.Map()
+
+		ewmh.WmStateReq(X, win.Id, ewmh.StateToggle,
+			"_NET_WM_STATE_FULLSCREEN")
+		ewmh.WmWindowOpacitySet(X, win.Id, 0.0)
+		savedWin = win
 	} else {
-		c = crosshair
+		if savedWin != nil {
+			savedWin.Destroy()
+		}
 	}
-	win.Change(xproto.CwBackPixel|xproto.CwCursor,
-		0xffffffff, uint32(c))
+
+	isActive = !isActive
+
+}
+
+func closeCursor() {
+	if savedWin != nil {
+		savedWin.Destroy()
+	}
+
 	isActive = !isActive
 }
 
